@@ -239,3 +239,52 @@ class ExternalIdTwoPassMixin:
             finally:
                 self._fetch_processing_only = False
             self.logger.info(f"{self.name.capitalize()} in Processing status: {pass3_count}")
+
+
+class RelatedPurchaseOrderMixin:
+    """Re-fetch the full `purchaseOrder` when Precoro returns it shortened (no `customName`).
+
+    ETLs read `purchaseOrder.customName`; the full PO now lives at
+    `GET invoices/{idn}/related/purchase_order`.
+    """
+
+    @staticmethod
+    def _is_shortened_purchase_order(purchase_order) -> bool:
+        return (
+            isinstance(purchase_order, dict)
+            and purchase_order.get("id") is not None
+            and "customName" not in purchase_order
+        )
+
+    def _get_related_purchase_orders(self, invoice_idn) -> list:
+        url = f"{self.url_base}/invoices/{invoice_idn}/related/purchase_order"
+        headers = {**self.http_headers, "X-AUTH-TOKEN": self.config.get("auth_token")}
+        prepared = self.requests_session.prepare_request(
+            requests.Request("GET", url, headers=headers)
+        )
+        response = self.request_decorator(self._request)(prepared, None)
+        return response.json().get("data") or []
+
+    def post_process(self, row: dict, context: Optional[dict] = None) -> Optional[dict]:
+        row = super().post_process(row, context)
+        if not row:
+            return row
+
+        purchase_order = row.get("purchaseOrder")
+        if not self._is_shortened_purchase_order(purchase_order):
+            return row
+
+        related = self._get_related_purchase_orders(row.get("idn"))
+        full = next(
+            (po for po in related if isinstance(po, dict) and po.get("id") == purchase_order["id"]),
+            None,
+        )
+        if full is None:
+            self.logger.warning(
+                f"Related purchase order id={purchase_order['id']} not found for "
+                f"{self.name} idn={row.get('idn')}; keeping the shortened purchaseOrder"
+            )
+            return row
+
+        row["purchaseOrder"] = {**purchase_order, **full}
+        return row
