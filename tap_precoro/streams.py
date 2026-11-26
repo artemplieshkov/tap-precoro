@@ -8,7 +8,12 @@ import requests
 from singer_sdk import typing as th  # JSON Schema typing helpers
 from pendulum import parse
 
-from tap_precoro.client import PrecoroStream, ExternalIdTwoPassMixin, AccountSetupMixin
+from tap_precoro.client import (
+    PrecoroStream,
+    ExternalIdTwoPassMixin,
+    AccountSetupMixin,
+    RelatedPurchaseOrderMixin,
+)
 
 # Precoro integrationStatus value meaning the document is waiting on a disabled/offline
 # connector (handled by the hotglue-webhook path now), so the polling job must skip it.
@@ -252,7 +257,7 @@ class InvoicesStream(ExternalIdTwoPassMixin, TransactionsStream):
         return row
 
 
-class InvoiceDetailsStream(PrecoroStream):
+class InvoiceDetailsStream(RelatedPurchaseOrderMixin, PrecoroStream):
     """Define custom stream."""
 
     name = "invoices_details"
@@ -331,6 +336,7 @@ class InvoiceDetailsStream(PrecoroStream):
         ),
         th.Property("attachments", th.CustomType({"type": ["object", "array"]})),
         th.Property("relatedOcrAttachment", th.CustomType({"type": ["object", "array"]})),
+        th.Property("relatedRecognizedDocument", th.CustomType({"type": ["object", "array"]})),
         th.Property("allocatedInvoice", th.CustomType({"type": ["object", "array"]})),
         th.Property("contracts", th.CustomType({"type": ["object", "array"]})),
         th.Property("isBudgetOverLimit", th.BooleanType),
@@ -908,7 +914,7 @@ class CreditNotesStream(ExternalIdTwoPassMixin, TransactionsStream):
         return row
 
 
-class CreditNoteDetailsStream(PrecoroStream):
+class CreditNoteDetailsStream(RelatedPurchaseOrderMixin, PrecoroStream):
     """Credit note details stream."""
 
     name = "credit_notes_details"
