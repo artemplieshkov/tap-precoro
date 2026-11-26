@@ -336,6 +336,7 @@ class InvoiceDetailsStream(RelatedPurchaseOrderMixin, PrecoroStream):
         ),
         th.Property("attachments", th.CustomType({"type": ["object", "array"]})),
         th.Property("relatedOcrAttachment", th.CustomType({"type": ["object", "array"]})),
+        th.Property("relatedRecognizedDocument", th.CustomType({"type": ["object", "array"]})),
         th.Property("allocatedInvoice", th.CustomType({"type": ["object", "array"]})),
         th.Property("contracts", th.CustomType({"type": ["object", "array"]})),
         th.Property("isBudgetOverLimit", th.BooleanType),
