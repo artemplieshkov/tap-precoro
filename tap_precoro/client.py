@@ -142,7 +142,10 @@ class PrecoroStream(RESTStream):
 
 class AccountSetupMixin:
     """Mixin to support Account Setup mode, where one Precoro supplier maps to multiple LegalEntities in external systems."""
-    
+
+    ACCOUNT_SETUP_RETRY_WAITS = (10, 20, 40)
+    ACCOUNT_SETUP_RETRYABLE_STATUSES = {429, 500, 502, 503, 504}
+
     def _get_account_setup_headers(self, account_setup: dict, payload: dict = None) -> dict:
         """Generate Authorization signature and headers for AccountSetup microservice."""
         secret = str(account_setup.get("secret"))
@@ -173,21 +176,67 @@ class AccountSetupMixin:
             external_id = row["externalId"]
             base_url = account_setup.get("url").rstrip("/")
             url = f"{base_url}/api/hotglue/account_setup"
-            
+
             try:
                 self.logger.info(f"Fetching Account Setup data for externalId {external_id} from {url}")
                 headers = self._get_account_setup_headers(account_setup)
-                response = requests.get(url, params={"externalId": external_id}, headers=headers, timeout=10)
+                response = self._get_account_setup_with_retry(url, external_id, headers)
                 response.raise_for_status()
                 data = response.json()
-                
+
                 records = data.get("records")
                 if data.get("isSuccess") and records:
                     row["accountSetupData"] = records
+            except FatalAPIError:
+                raise
             except Exception as e:
                 self.logger.warning(f"Failed to fetch account setup data for externalId {external_id}: {e}")
-                
+
         return row
+
+    def _get_account_setup_with_retry(self, url: str, external_id: str, headers: dict) -> requests.Response:
+        """GET AccountSetup records, retrying rate limits, 5xx and connection errors.
+
+        Raises FatalAPIError once the retries are used up, so the sync fails rather than
+        emitting the supplier without accountSetupData.
+        """
+        waits = self.ACCOUNT_SETUP_RETRY_WAITS
+        last_problem = None
+        for attempt in range(len(waits) + 1):
+            try:
+                response = requests.get(url, params={"externalId": external_id}, headers=headers, timeout=10)
+            except (requests.ConnectionError, requests.Timeout) as e:
+                response = None
+                last_problem = f"{type(e).__name__}: {e}"
+            else:
+                if response.status_code not in self.ACCOUNT_SETUP_RETRYABLE_STATUSES:
+                    return response
+                last_problem = f"HTTP {response.status_code}: {response.text[:200]}"
+
+            if attempt == len(waits):
+                break
+
+            wait = self._account_setup_retry_wait(response, waits[attempt])
+            self.logger.warning(
+                f"AccountSetup request for externalId {external_id} failed ({last_problem}); "
+                f"retry {attempt + 1}/{len(waits)} in {wait}s"
+            )
+            time.sleep(wait)
+
+        raise FatalAPIError(
+            f"AccountSetup data for externalId {external_id} could not be fetched after "
+            f"{len(waits) + 1} attempts ({last_problem}). Stopping the sync so the supplier "
+            f"is not exported without its legal-entity mapping."
+        )
+
+    @staticmethod
+    def _account_setup_retry_wait(response: Optional[requests.Response], default: int) -> int:
+        """Use Retry-After (seconds) when the server sends it, otherwise the default wait."""
+        if response is not None:
+            retry_after = response.headers.get("Retry-After")
+            if retry_after and retry_after.isdigit():
+                return int(retry_after)
+        return default
 
 
 class ExternalIdTwoPassMixin:
